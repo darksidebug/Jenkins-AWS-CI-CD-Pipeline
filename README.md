@@ -63,18 +63,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: kreditinfo_client
-    ports:
-      - "3000:3000"
-```
-
-## FE (NextJs) ``docker-compose.override.yml``
-```yaml
-services:
-  web:
-    build:
-      context: .
       target: dev
+    container_name: <contianer_name>
     volumes:
       - .:/app
       - /app/node_modules
@@ -85,6 +75,8 @@ services:
       - CHOKIDAR_INTERVAL=200
       - NODE_ENV=development
     command: npm run dev
+    ports:
+      - "3000:3000"
 ```
 
 ## FE (NextJs) ``docker-compose.prod.yml``
@@ -94,7 +86,7 @@ services:
     build:
       context: .
       target: prod
-    container_name: kreditinfo_client
+    container_name: <conatiner_name>
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -219,13 +211,13 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev
-    container_name: linkage_app
+    container_name: <app_container_name>
     restart: unless-stopped
     volumes:
       - ./:/var/www/html
       - /var/www/html/vendor
     networks:
-      - linkage_network
+      - <project_name>_network
     depends_on:
       - db
       - minio
@@ -236,19 +228,19 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:80"
-    container_name: linkage_nginx
+    container_name: <nginx_container_name>
     volumes:
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./public:/var/www/html
     networks:
-      - linkage_network
+      - <project_name>_network
     depends_on:
       - app
       - php
 
   php:
     image: php:8.2-fpm
-    container_name: linkage_php
+    container_name: <php_container_name>
     restart: unless-stopped
     volumes:
       - .:/var/www
@@ -256,7 +248,7 @@ services:
 
   db:
     image: mysql:8.0
-    container_name: linkage_db
+    container_name: <db_container_name>
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: ${DB_DATABASE}
@@ -267,14 +259,14 @@ services:
     ports:
       - "3307:3306"
     volumes:
-      - linkage_data:/var/lib/mysql
+      - <project_name>_data:/var/lib/mysql
       - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
-      - linkage_network
+      - <project_name>_network
 
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
-    container_name: linkage_phpmyadmin
+    container_name: <phpmyadmin_contianer_name>
     restart: unless-stopped
     ports:
       - "8080:80"
@@ -283,13 +275,13 @@ services:
       PMA_USER: ${PMA_USER}
       PMA_PASSWORD: ${PMA_PASSWORD}
     networks:
-      - linkage_network
+      - <project_name>_network
     depends_on:
       - db
 
   minio:
     image: minio/minio:latest
-    container_name: linkage_minio
+    container_name: <minio_container_name>
     command: server --console-address ":9001" /data
     restart: unless-stopped
     ports:
@@ -300,9 +292,9 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET}
     volumes:
-      - linkage_minio:/data
+      - <project_name>_minio:/data
     networks:
-      - linkage_network
+      - <project_name>_network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
@@ -311,7 +303,7 @@ services:
 
   mc:
     image: minio/mc:latest
-    container_name: linkage_mc
+    container_name: <mc_container_name>
     depends_on:
       minio:
         condition: service_healthy
@@ -323,7 +315,7 @@ services:
         mc anonymous set download local/${MINIO_BUCKET} || true
       "
     networks:
-      - linkage_network
+      - <project_name>_network
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -331,11 +323,11 @@ services:
     restart: "no"
 
 networks:
-  linkage_network:
+  <project_name>_network:
 
 volumes:
-  linkage_data:
-  linkage_minio:
+  <project_name>_data:
+  <project_name>_minio:
 
 ```
 
@@ -347,8 +339,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: prod
-    image: linkage_backend 
-    container_name: linkage_app
+    image: <image_name> 
+    container_name: <container_name>
     restart: unless-stopped
     volumes:
       - ./:/var/www/html
@@ -479,8 +471,8 @@ http {
 FROM nginx:alpine
 
 # Create non-root user
-RUN addgroup -g 1001 -S kreditinfo_nginx && \
-    adduser -S kreditinfo_nginx -u 1001 -G kreditinfo_nginx
+RUN addgroup -g 1001 -S nginx && \
+    adduser -S nginx -u 1001 -G nginx
 
 # Set permissions for logs and www
 RUN mkdir -p /var/www/html \
@@ -493,7 +485,7 @@ COPY default.conf /etc/nginx/conf.d/default.conf
 
 ## BE (Laravel) ``docker/mysql/init.sql``
 ```sql
-GRANT ALL PRIVILEGES ON *.* TO 'admin_kreditinfo'@'%' IDENTIFIED BY 'adm1n_krEditInfo' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO '<db_name>'@'%' IDENTIFIED BY '<db_username>' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 ```
 
@@ -549,13 +541,221 @@ volumes:
 
 ```
 
-## Jenkins Pipeline script
+## Jenkins Pipeline script (Laravel)
 ```groovy
 pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = "darksidebug/linkage-admin"
+        IMAGE_NAME = "<your_docker_hub_username>/<repository>"
+        IMAGE_TAG = "latest"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'develop',
+                url: 'https://github.com/<your-repo>.git',
+                credentialsId: 'github-creds'
+            }
+        }
+
+        stage('Build Docker Image') { 
+            steps { 
+                script { 
+                    sh """ 
+                        echo ">> Building image for app service"
+                        docker-compose -f docker-compose.prod.yml build 
+                    """ 
+                } 
+            } 
+        }
+        
+        stage('Push Docker Image') { 
+            steps { 
+                script { 
+                    withCredentials([
+                        usernamePassword( 
+                            credentialsId: '<your-docker-hub-creds-id>', 
+                            usernameVariable: 'DOCKER_HUB_USER', 
+                            passwordVariable: 'DOCKER_HUB_PASS' 
+                        )]
+                    ) { 
+                        sh ''' 
+                            set -e 
+                            echo "🔑 Logging into Docker Hub..." 
+                            echo "$DOCKER_HUB_PASS" | docker login -u "$DOCKER_HUB_USER" --password-stdin 
+                            
+                            echo "🏷️ Tagging images..."
+                            docker tag <tag_name> $IMAGE_NAME-app:$IMAGE_TAG
+                            
+                            echo "📦 Pushing versioned images..." 
+                            docker push $IMAGE_NAME-app:$IMAGE_TAG
+                            
+                            echo "🏷️ Tagging as latest..."
+                            docker tag $IMAGE_NAME-app:$IMAGE_TAG $IMAGE_NAME-app:latest 
+                            
+                            echo "📦 Pushing latest..." 
+                            docker push $IMAGE_NAME-app:latest
+                            
+                            echo "✅ Docker images pushed successfully." 
+                        ''' 
+                    }
+                } 
+            } 
+        }
+
+        stage('Deploy to EC2') {
+            steps {
+                script {
+                    withCredentials([
+                        sshUserPrivateKey( 
+                            credentialsId: '<your-deploy-ssh-key-id>', 
+                            keyFileVariable: 'SSH_KEY_FILE', 
+                            usernameVariable: 'SSH_USER' 
+                        ), 
+                        string( 
+                            credentialsId: '<your-remote-host-ip-id>', 
+                            variable: 'REMOTE_HOST' 
+                        ), 
+                        string( 
+                            credentialsId: 'APP_KEY', 
+                            variable: 'APP_KEY' 
+                        ), 
+                        string( 
+                            credentialsId: 'DB_HOST', 
+                            variable: 'DB_HOST' 
+                        ), 
+                        string( 
+                            credentialsId: 'DB_DATABASE', 
+                            variable: 'DB_DATABASE' 
+                        ), 
+                        string( 
+                            credentialsId: 'DB_USERNAME', 
+                            variable: 'DB_USERNAME' 
+                        ), 
+                        string( 
+                            credentialsId: 'DB_PASSWORD', 
+                            variable: 'DB_PASSWORD' 
+                        ), 
+                        string( 
+                            credentialsId: 'MAIL_USERNAME', 
+                            variable: 'MAIL_USERNAME' 
+                        ), 
+                        string( 
+                            credentialsId: 'MAIL_PASSWORD', 
+                            variable: 'MAIL_PASSWORD' 
+                        ), 
+                        string( 
+                            credentialsId: 'AWS_ACCESS_KEY_ID', 
+                            variable: 'AWS_ACCESS_KEY_ID' 
+                        ), 
+                        string( 
+                            credentialsId: 'AWS_SECRET_ACCESS_KEY', 
+                            variable: 'AWS_SECRET_ACCESS_KEY' 
+                        ), 
+                        string( 
+                            credentialsId: 'GOOGLE_CLIENT_ID', 
+                            variable: 'GOOGLE_CLIENT_ID' 
+                        ), 
+                        string( 
+                            credentialsId: 'GOOGLE_CLIENT_SECRET', 
+                            variable: 'GOOGLE_CLIENT_SECRET' 
+                        ), 
+                        string( 
+                            credentialsId: 'GHL_SECRET_KEY', 
+                            variable: 'GHL_SECRET_KEY' 
+                        ), 
+                        string( 
+                            credentialsId: 'GHL_MERCHANT_ID', 
+                            variable: 'GHL_MERCHANT_ID' 
+                        ), 
+                        string( 
+                            credentialsId: 'LINKAGE_JWT_SECRET', 
+                            variable: 'JWT_SECRET' 
+                        )
+                    ]) {
+                        sh """
+                            set -e  # Stop on any command failure
+                            
+                            echo "🔐 Setting up SSH for deployment..."
+                            if ! grep -q "$REMOTE_HOST" "$HOME/.ssh/known_hosts" 2>/dev/null; then
+                                ssh-keyscan -H "$REMOTE_HOST" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+                            fi
+                            
+                            chmod 600 "$SSH_KEY_FILE"
+                            
+                            echo "🚀 Deploying to EC2: $REMOTE_HOST"
+                            
+                            ssh -i "$SSH_KEY_FILE" \
+                                -o StrictHostKeyChecking=no \
+                                -o UserKnownHostsFile=/dev/null \
+                                "$SSH_USER@$REMOTE_HOST" << 'EOF'
+                                
+                            set -e
+                            
+                            echo "🧹 Cleaning up dangling images..."
+                            sudo docker image prune -f
+                            
+                            echo "📦 Pulling latest app image..."
+                            sudo docker pull <dockerhub-username>/<docker-hub-repository>-app:latest
+                            
+                            echo "🔁 Stopping and removing existing containers..."
+                            sudo docker rm -f <container_name> 2>/dev/null || true
+                            
+                            echo "🚀 Running app container..."
+                            sudo docker run -d \
+                                --name <container_name> \
+                                --network <service_network> \
+                                -p 9001:9000 \
+                                -e NODE_ENV=production \
+                                -e APP_KEY="${APP_KEY}" \
+                                -e DB_HOST=mysql-linkage \
+                                -e DB_DATABASE="${DB_DATABASE}" \
+                                -e DB_USERNAME="${DB_USERNAME}" \
+                                -e DB_PASSWORD="${DB_PASSWORD}" \
+                                -e MAIL_USERNAME="${MAIL_USERNAME}" \
+                                -e MAIL_PASSWORD="${MAIL_PASSWORD}" \
+                                -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+                                -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+                                -e GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID}" \
+                                -e GOOGLE_CLIENT_SECRET="${GOOGLE_CLIENT_SECRET}" \
+                                -e GHL_SECRET_KEY="${GHL_SECRET_KEY}" \
+                                -e GHL_MERCHANT_ID="${GHL_MERCHANT_ID}" \
+                                -e JWT_SECRET="${JWT_SECRET}" \
+                                <dockerhub-username>/<docker-hub-repository>-app:latest
+                            
+                            echo "✅ Deployment complete."
+                        """
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "🧹 Cleaning workspace..."
+            cleanWs()
+        }
+        success {
+            echo '✅  Backend Docker deployment successful via Docker Hub!'
+        }
+        failure {
+            echo '❌ Deployment failed.'
+        }
+    }
+}
+
+```
+
+## Jenkins Pipeline script (Next.Js)
+```groovy
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = "<your_docker_hub_username>/<repository>"
         IMAGE_TAG = "latest"
     }
 
@@ -563,7 +763,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 git branch: 'main',
-                url: 'https://github.com/awesome-devs-team/linkage-info-solutions-admin-v2.git',
+                url: 'https://github.com/<your-repo>.git',
                 credentialsId: 'github-creds'
             }
         }
@@ -584,7 +784,7 @@ pipeline {
                 script { 
                     withCredentials([
                         usernamePassword( 
-                            credentialsId: 'docker-hub-creds', 
+                            credentialsId: '<your-docker-hub-creds-id>', 
                             usernameVariable: 'DOCKER_HUB_USER', 
                             passwordVariable: 'DOCKER_HUB_PASS' 
                         )]
@@ -609,12 +809,12 @@ pipeline {
                 script {
                     withCredentials([
                         sshUserPrivateKey( 
-                            credentialsId: 'linkage-frontend-deploy-ssh-key', 
+                            credentialsId: '<your-deploy-ssh-key-id>', 
                             keyFileVariable: 'SSH_KEY_FILE', 
                             usernameVariable: 'SSH_USER' 
                         ), 
                         string( 
-                            credentialsId: 'ec2-frontend-host', 
+                            credentialsId: '<your-remote-host-ip-id>', 
                             variable: 'REMOTE_HOST' 
                         )
                     ]) {
@@ -650,30 +850,30 @@ pipeline {
                         
                             echo "📂 Checking access to /home/ubuntu/linkage ..."
                             if [ ! -d /home/ubuntu/linkage ]; then
-                                echo "❌ Directory /home/ubuntu/linkage not found!"
+                                echo "❌ Directory /home/ubuntu/<your-project-dir> not found!"
                                 exit 1
                             fi
                         
                             echo "🔐 Fixing permissions for Jenkins access..."
-                            sudo chmod -R 755 /home/ubuntu/linkage
+                            sudo chmod -R 755 /home/ubuntu/<your-project-dir>
                         
                             cd /home/ubuntu/linkage || {
-                                echo "❌ Failed to cd into /home/ubuntu/linkage"
+                                echo "❌ Failed to cd into /home/ubuntu/<your-project-dir>"
                                 exit 1
                             }
                             
                             echo "📦 Pulling latest app image..."
-                            sudo docker pull darksidebug/linkage-admin-app:latest
+                            sudo docker pull <dockerhub-username>/<docker-hub-repository>-app:latest
                             
                             echo "🔁 Stopping and removing existing containers..."
-                            sudo docker rm -f linkage_admin 2>/dev/null || true
+                            sudo docker rm -f <container_name> 2>/dev/null || true
                             
                             echo "🚀 Running app container..."
                             sudo docker run -d \
-                              --name linkage_admin \
-                              -p 3001:3000 \
+                              --name <container_name> \
+                              -p 3000:3000 \
                               -e NODE_ENV=production \
-                              darksidebug/linkage-admin-app:latest
+                              <dockerhub-username>/<docker-hub-repository>-app:latest
                         
                             echo "🧹 Cleaning up unused Docker resources..."
                             sudo docker system prune -f
@@ -693,7 +893,7 @@ pipeline {
             cleanWs()
         }
         success {
-            echo '✅  Linkageph Admin Docker deployment successful via Docker Hub!'
+            echo '✅  Frontend docker deployment successful via Docker Hub!'
         }
         failure {
             echo '❌ Deployment failed.'
