@@ -497,6 +497,57 @@ GRANT ALL PRIVILEGES ON *.* TO 'admin_kreditinfo'@'%' IDENTIFIED BY 'adm1n_krEdi
 FLUSH PRIVILEGES;
 ```
 
+## Jenkins ``Dockerfile``
+```Dockerfile
+FROM jenkins/jenkins:lts
+
+USER root
+
+# Install Docker CLI and docker-compose
+RUN apt-get update && apt-get install -y \
+  docker.io \
+  docker-compose \
+  git \
+  curl \
+  sudo \
+  && rm -rf /var/lib/apt/lists/*
+
+# Add jenkins user to docker group
+RUN usermod -aG docker jenkins
+
+USER jenkins
+
+```
+
+## Jenkins ``docker-compose.yml``
+```yaml
+version: "3.9"
+
+services:
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jenkins
+    user: root
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - D:/Projects/Linkage/LinkagePH-Backend-Deployment.pem:/home/jenkins/deploy.pem:rw
+    networks:
+      - jenkins_network
+
+networks:
+  jenkins_network:
+
+volumes:
+  jenkins_home:
+
+```
 
 ## Jenkins Pipeline script
 ```groovy
