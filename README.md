@@ -2,7 +2,7 @@
 
 ## FE Multi-Stage ``Dockerfile``
 
-```groovy
+```yml
 # =============================
 # 1. Base Stage (common setup)
 # =============================
