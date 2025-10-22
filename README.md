@@ -1,6 +1,6 @@
 # Jenkins-AWS-CI-CD-Pipeline
 
-## FE Multi-Stage ``Dockerfile``
+## FE (NextJs) Multi-Stage ``Dockerfile``
 
 ```yaml
 # =============================
