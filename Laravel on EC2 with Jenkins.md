@@ -50,16 +50,28 @@ sudo chmod +x /usr/local/bin/docker-compose
 Create `docker-compose.yml` on the **Jenkins EC2**:
 ```yaml
 version: "3.9"
+
 services:
   jenkins:
-    image: jenkins/jenkins:lts-jdk17
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jenkins
     user: root
-    ports: ["8080:8080", "50000:50000"]
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "50000:50000"
     volumes:
       - jenkins_home:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+      - D:/Projects/Linkage/LinkagePH-Backend-Deployment.pem:/home/jenkins/deploy.pem:rw
+    networks:
+      - jenkins_network
+
+networks:
+  jenkins_network:
+
 volumes:
   jenkins_home:
 ```
