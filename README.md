@@ -969,8 +969,8 @@ pipeline {
                                 }
                             fi
                         
-                            echo "📂 Checking access to /home/ubuntu/linkage ..."
-                            if [ ! -d /home/ubuntu/linkage ]; then
+                            echo "📂 Checking access to /home/ubuntu/your-project-dir> ..."
+                            if [ ! -d /home/ubuntu/<your-project-dir> ]; then
                                 echo "❌ Directory /home/ubuntu/<your-project-dir> not found!"
                                 exit 1
                             fi
