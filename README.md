@@ -1,6 +1,6 @@
 # Jenkins-AWS-CI-CD-Pipeline
 
-## FE ``Dockerfile``
+## FE Multi-Stage ``Dockerfile``
 
 ```groovy
 # =============================
