@@ -1,4 +1,4 @@
-# Jenkins-AWS-CI-CD-Pipeline
+# Jenkins-AWS-CI-CD-Pipeline (Next.Js and Laravel)
 
 ## FE (NextJs) Multi-Stage ``Dockerfile``
 
@@ -101,3 +101,401 @@ services:
     environment:
       - NODE_ENV=production
 ```
+
+
+
+## BE (Laravel) Multi-Stage ``Dockerfile``
+```
+# =============================
+# 1. Base Stage (common setup)
+# =============================
+FROM php:8.2-fpm AS base
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpng-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
+    locales \
+    zip \
+    jpegoptim optipng pngquant gifsicle \
+    vim unzip git curl \
+    libonig-dev \
+    libxml2-dev \
+    libzip-dev \
+    libmagickwand-dev --no-install-recommends \
+    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd zip \
+    && pecl install imagick \
+    && docker-php-ext-enable imagick \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Composer
+COPY --from=composer:2.6 /usr/bin/composer /usr/bin/composer
+
+# Install dockerize (wait for db)
+ARG DOCKERIZE_VERSION=v0.6.1
+RUN if ! command -v dockerize >/dev/null 2>&1; then \
+        curl -L https://github.com/jwilder/dockerize/releases/download/${DOCKERIZE_VERSION}/dockerize-linux-amd64-${DOCKERIZE_VERSION}.tar.gz \
+        | tar -C /usr/local/bin -xzv; \
+    fi
+
+WORKDIR /var/www/html
+
+# Copy composer files first for caching
+COPY composer.json composer.lock ./
+
+# =============================
+# 2. Build Stage
+# =============================
+FROM base AS build
+
+WORKDIR /var/www/html
+
+# Copy full source code AFTER dependencies are installed
+COPY . .
+
+# Install PHP dependencies (no dev) – cached unless composer.json/lock changes
+RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+
+# =============================
+# 3. Development Stage
+# =============================
+FROM base AS dev
+
+WORKDIR /var/www/html
+
+# Copy full source
+COPY . .
+
+# Install PHP dependencies including dev (cached with composer files only)
+RUN composer install --optimize-autoloader --no-interaction --prefer-dist
+
+# Set permissions
+RUN chown -R www-data:www-data storage bootstrap/cache \
+    && chmod -R 775 storage bootstrap/cache
+
+# Copy entrypoint
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+EXPOSE 9000
+
+ENTRYPOINT ["entrypoint.sh"]
+
+# Run php-fpm for dev
+CMD ["php-fpm", "-F"]
+
+# =============================
+# 4. Production Stage
+# =============================
+FROM base AS prod
+
+# Copy built application from build stage
+COPY --from=build /var/www/html /var/www/html
+
+# Copy example .env as actual .env
+COPY .env.production.example /var/www/html/.env
+
+# Set permissions
+RUN chown -R www-data:www-data storage bootstrap/cache \
+    && chmod -R 775 storage bootstrap/cache
+
+# Copy entrypoint
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+EXPOSE 9000
+
+ENTRYPOINT ["entrypoint.sh"]
+CMD ["php-fpm", "-F"]
+```
+
+## BE (Laravel) ``docker-compose.yml``
+```yaml
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    container_name: linkage_app
+    restart: unless-stopped
+    volumes:
+      - ./:/var/www/html
+      - /var/www/html/vendor
+    networks:
+      - linkage_network
+    depends_on:
+      - db
+      - minio
+
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    ports:
+      - "8000:80"
+    container_name: linkage_nginx
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./public:/var/www/html
+    networks:
+      - linkage_network
+    depends_on:
+      - app
+      - php
+
+  php:
+    image: php:8.2-fpm
+    container_name: linkage_php
+    restart: unless-stopped
+    volumes:
+      - .:/var/www
+      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
+
+  db:
+    image: mysql:8.0
+    container_name: linkage_db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_ROOT_PASSWORD: ${ROOT_PASSWORD}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - linkage_data:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - linkage_network
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: linkage_phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      PMA_HOST: ${PMA_HOST}
+      PMA_USER: ${PMA_USER}
+      PMA_PASSWORD: ${PMA_PASSWORD}
+    networks:
+      - linkage_network
+    depends_on:
+      - db
+
+  minio:
+    image: minio/minio:latest
+    container_name: linkage_minio
+    command: server --console-address ":9001" /data
+    restart: unless-stopped
+    ports:
+      - "9002:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    volumes:
+      - linkage_minio:/data
+    networks:
+      - linkage_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mc:
+    image: minio/mc:latest
+    container_name: linkage_mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        echo '>> Ensuring bucket: ${MINIO_BUCKET}';
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+        mc mb --ignore-existing local/${MINIO_BUCKET} &&
+        mc anonymous set download local/${MINIO_BUCKET} || true
+      "
+    networks:
+      - linkage_network
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    restart: "no"
+
+networks:
+  linkage_network:
+
+volumes:
+  linkage_data:
+  linkage_minio:
+
+```
+
+## BE (Laravel) ``docker-compose.prod.yml``
+```yaml
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    image: linkage_backend 
+    container_name: linkage_app
+    restart: unless-stopped
+    volumes:
+      - ./:/var/www/html
+
+```
+
+## BE (Laravel) ``docker/entrypoint.sh``
+```bash
+#!/bin/sh
+set -e
+
+ENV_FILE=/var/www/html/.env
+
+if [ ! -f "$ENV_FILE" ]; then
+    cp /var/www/html/.env.example "$ENV_FILE"
+fi
+
+echo "📦 Checking Composer dependencies..."
+if [ ! -d "vendor" ]; then
+  composer install --no-dev --optimize-autoloader --no-interaction
+fi
+
+echo "🔑 Checking APP_KEY..."
+if [ -z "$APP_KEY" ] || [ "$APP_KEY" = "base64:" ]; then
+  echo "⚡ No APP_KEY set, generating one..."
+  php artisan key:generate --force
+else
+  echo "✅ APP_KEY already set."
+fi
+
+echo "⏳ Waiting for database..."
+dockerize -wait tcp://mysql-linkage:3306 -timeout 60s
+
+echo "🚀 Running migrations..."
+php artisan migrate --force || echo "⚠️ Migration skipped (already up to date)"
+php artisan db:seed || echo "⚠️ Seeder skipped (already up to date)"
+
+echo "🧹 Caching config, routes, views..."
+php artisan config:clear
+php artisan route:clear
+php artisan view:clear
+# php artisan optimize:clear
+
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+
+echo "✅ Starting PHP-FPM..."
+exec php-fpm -F
+
+```
+
+## BE (Laravel) ``docker/php/uploads.ini``
+```
+upload_max_filesize = 1024M
+post_max_size = 1024M
+memory_limit = 2048M
+expose_php = Off
+```
+
+## BE (Laravel) ``docker/nginx/default.conf``
+```bash
+server {
+  listen 80;
+  index index.php index.html;
+  server_name localhost;
+
+  root /var/www/html/public;
+
+  # Enable error logging
+  error_log  /var/log/nginx/error.log debug;
+  access_log /var/log/nginx/access.log;
+
+  # increase request size
+  client_max_body_size 1024M;
+  proxy_hide_header X-Powered-By;
+  fastcgi_hide_header X-Powered-By;
+
+  location / {
+    try_files $uri $uri/ /index.php?$query_string;
+  }
+
+  location ~ \.php$ {
+    include fastcgi_params;
+    fastcgi_pass app:9000;
+    fastcgi_index index.php;
+    fastcgi_param PATH_INFO $fastcgi_path_info;
+    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+
+    # PHP error visibility
+    # comment this if you don't want to show php errors
+    fastcgi_param PHP_VALUE "display_errors=1 \n error_reporting=E_ALL";
+
+    fastcgi_buffers 16 16k;
+    fastcgi_buffer_size 32k;
+  }
+
+  location ~ /\.ht {
+    deny all;
+  }
+}
+
+```
+
+## BE (Laravel) ``docker/nginx/nginx.conf``
+```bash
+user  kreditinfo_nginx;
+worker_processes  auto;
+
+events {
+  worker_connections 1024;
+}
+
+http {
+  server_tokens off;
+  add_header Server "";
+
+  include /etc/nginx/mime.types;
+  sendfile        on;
+  keepalive_timeout  65;
+
+  include /etc/nginx/conf.d/*.conf;
+}
+```
+
+## BE (Laravel) ``docker/nginx/Dockerfile``
+```yaml
+FROM nginx:alpine
+
+# Create non-root user
+RUN addgroup -g 1001 -S kreditinfo_nginx && \
+    adduser -S kreditinfo_nginx -u 1001 -G kreditinfo_nginx
+
+# Set permissions for logs and www
+RUN mkdir -p /var/www/html \
+    && chown -R kreditinfo_nginx:kreditinfo_nginx /var/www/html /var/log/nginx /var/cache/nginx /var/run
+
+# Copy configs
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY default.conf /etc/nginx/conf.d/default.conf
+```
+
+## BE (Laravel) ``docker/mysql/init.sql``
+```sql
+GRANT ALL PRIVILEGES ON *.* TO 'admin_kreditinfo'@'%' IDENTIFIED BY 'adm1n_krEditInfo' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+```
+
+
+
