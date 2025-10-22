@@ -2,7 +2,7 @@
 
 ## FE (NextJs) Multi-Stage ``Dockerfile``
 
-```yaml
+```Dockerfile
 # =============================
 # 1. Base Stage (common setup)
 # =============================
