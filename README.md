@@ -1,4 +1,4 @@
-# Jenkins-AWS-CI-CD-Pipeline (Next.Js and Laravel)
+# Jenkins-AWS-CI/CD-Pipeline (Next.Js and Laravel)
 
 ## FE (NextJs) Multi-Stage ``Dockerfile``
 
