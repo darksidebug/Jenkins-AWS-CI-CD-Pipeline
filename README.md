@@ -2,7 +2,7 @@
 
 ## FE Multi-Stage ``Dockerfile``
 
-```yml
+```yaml
 # =============================
 # 1. Base Stage (common setup)
 # =============================
