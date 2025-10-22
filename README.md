@@ -97,7 +97,7 @@ services:
 
 
 ## BE (Laravel) Multi-Stage ``Dockerfile``
-```
+```Dockerfile
 # =============================
 # 1. Base Stage (common setup)
 # =============================
