@@ -498,4 +498,158 @@ FLUSH PRIVILEGES;
 ```
 
 
+## Jenkins Pipeline script
+```groovy
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = "darksidebug/linkage-admin"
+        IMAGE_TAG = "latest"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                url: 'https://github.com/awesome-devs-team/linkage-info-solutions-admin-v2.git',
+                credentialsId: 'github-creds'
+            }
+        }
+
+        stage('Build Docker Image') { 
+            steps { 
+                script { 
+                    sh """ 
+                        echo ">> Building image for app service"
+                        docker-compose -f docker-compose.prod.yml build app
+                    """ 
+                } 
+            } 
+        }
+        
+        stage('Push Docker Image') { 
+            steps { 
+                script { 
+                    withCredentials([
+                        usernamePassword( 
+                            credentialsId: 'docker-hub-creds', 
+                            usernameVariable: 'DOCKER_HUB_USER', 
+                            passwordVariable: 'DOCKER_HUB_PASS' 
+                        )]
+                    ) { 
+                        sh ''' 
+                            set -e 
+                            echo "🔑 Logging into Docker Hub..." 
+                            echo "$DOCKER_HUB_PASS" | docker login -u "$DOCKER_HUB_USER" --password-stdin 
+                        
+                            echo "📦 Pushing latest..." 
+                            docker-compose -f docker-compose.prod.yml push app
+                            
+                            echo "✅ Docker images pushed successfully." 
+                        ''' 
+                    }
+                } 
+            } 
+        }
+
+        stage('Deploy to EC2') {
+            steps {
+                script {
+                    withCredentials([
+                        sshUserPrivateKey( 
+                            credentialsId: 'linkage-frontend-deploy-ssh-key', 
+                            keyFileVariable: 'SSH_KEY_FILE', 
+                            usernameVariable: 'SSH_USER' 
+                        ), 
+                        string( 
+                            credentialsId: 'ec2-frontend-host', 
+                            variable: 'REMOTE_HOST' 
+                        )
+                    ]) {
+                        sh '''
+                            set -e  # Stop on any command failure
+                            
+                            echo "🔐 Setting up SSH for deployment..."
+                            if ! grep -q "$REMOTE_HOST" "$HOME/.ssh/known_hosts" 2>/dev/null; then
+                                ssh-keyscan -H "$REMOTE_HOST" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+                            fi
+                            
+                            chmod 600 "$SSH_KEY_FILE"
+                            
+                            ssh -i "$SSH_KEY_FILE" \
+                                -o StrictHostKeyChecking=no \
+                                -o UserKnownHostsFile=/dev/null \
+                                "$SSH_USER@$REMOTE_HOST" << 'EOF'
+                                
+                            set -e
+                            
+                            echo "=============================="
+                            echo "🚀 Starting Docker deployment..."
+                            echo "=============================="
+                        
+                            echo "🔍 Checking Docker socket permissions..."
+                            if [ ! -w /var/run/docker.sock ]; then
+                                echo "⚠️ Fixing Docker socket permissions..."
+                                sudo chmod 666 /var/run/docker.sock || {
+                                    echo "❌ Failed to chmod docker.sock"
+                                    exit 1
+                                }
+                            fi
+                        
+                            echo "📂 Checking access to /home/ubuntu/linkage ..."
+                            if [ ! -d /home/ubuntu/linkage ]; then
+                                echo "❌ Directory /home/ubuntu/linkage not found!"
+                                exit 1
+                            fi
+                        
+                            echo "🔐 Fixing permissions for Jenkins access..."
+                            sudo chmod -R 755 /home/ubuntu/linkage
+                        
+                            cd /home/ubuntu/linkage || {
+                                echo "❌ Failed to cd into /home/ubuntu/linkage"
+                                exit 1
+                            }
+                            
+                            echo "📦 Pulling latest app image..."
+                            sudo docker pull darksidebug/linkage-admin-app:latest
+                            
+                            echo "🔁 Stopping and removing existing containers..."
+                            sudo docker rm -f linkage_admin 2>/dev/null || true
+                            
+                            echo "🚀 Running app container..."
+                            sudo docker run -d \
+                              --name linkage_admin \
+                              -p 3001:3000 \
+                              -e NODE_ENV=production \
+                              darksidebug/linkage-admin-app:latest
+                        
+                            echo "🧹 Cleaning up unused Docker resources..."
+                            sudo docker system prune -f
+                        
+                            echo "✅ Deployment completed successfully!"
+                            echo "=============================="
+                        '''
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "🧹 Cleaning workspace..."
+            cleanWs()
+        }
+        success {
+            echo '✅  Linkageph Admin Docker deployment successful via Docker Hub!'
+        }
+        failure {
+            echo '❌ Deployment failed.'
+        }
+    }
+}
+
+```
+
 
