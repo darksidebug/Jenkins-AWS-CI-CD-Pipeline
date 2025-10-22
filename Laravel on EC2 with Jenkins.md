@@ -1,53 +1,525 @@
-# 📘 Step‑by‑Step CI/CD Guide — Laravel on EC2 with Jenkins, Docker Hub, Docker Compose, Nginx Reverse Proxy & GoDaddy SSL + MySQL
+# Jenkins-AWS-CI-CD-Pipeline (Next.Js and Laravel)
 
-This guide walks you through a clean, reproducible setup from zero to production. It uses:
+## FE (NextJs) Multi-Stage ``Dockerfile``
 
-- **GitHub → Jenkins (EC2) → Docker Hub → EC2 app host**
-- **Nginx reverse proxy** for your domain with **GoDaddy SSL**
-- **MySQL** and **Redis** as containers
+```yaml
+# =============================
+# 1. Base Stage (common setup)
+# =============================
+FROM node:22.14-alpine AS base
+WORKDIR /app
 
-> Already have the code snippets? Follow the numbered steps below to wire everything together end‑to‑end.
+# Install dependencies first (better caching)
+COPY package*.json ./
+RUN npm install --legacy-peer-deps
 
----
+# Copy everything
+COPY . .
 
-## 0) Decide your variables (write these down)
-- **Domain**: `yourdomain.com`
-- **Docker Hub username**: `yourdockerhubuser`
-- **Image name**: `your-laravel-app`
-- **EC2 (Jenkins) IP**: `JENKINS_IP`
-- **EC2 (App) IP**: `APP_IP`
-- **Jenkins credentials IDs** you will create:
-  - `github-ssh` (SSH key for repo)
-  - `dockerhub-creds` (Docker Hub user/pass)
-  - `ec2-ssh-prod` (SSH key for app EC2)
+# =============================
+# 2. Development Stage
+# =============================
+FROM base AS dev
 
----
+# Enable hot reload
+CMD ["npm", "run", "dev"]
 
-## 1) Provision two EC2 instances
-**OS**: Ubuntu 22.04 LTS recommended.
+# =============================
+# 3. Build Stage
+# =============================
+FROM base AS build
+RUN npm run build
 
-**Security Groups**
-- **Jenkins EC2**: inbound `22/tcp` (your IP), `8080/tcp` (your IP)
-- **App EC2**: inbound `22/tcp` (your IP), `80/tcp` (0.0.0.0/0 or via ALB), `443/tcp` (0.0.0.0/0 or via ALB)
+# =============================
+# 4. Production Stage
+# =============================
+FROM node:22.14-alpine AS prod
+WORKDIR /app
 
-> Use key pairs (PEM) and disable password logins later for security.
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S kreditinfo -u 1001 -G nodejs
 
----
+# Copy only what’s needed for prod
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/.next ./.next
+COPY --from=build /app/public ./public
+COPY --from=build /app/next.config.ts ./next.config.ts
 
-## 2) Install Docker & Compose (both EC2s)
-SSH into each instance and run:
-```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-# Re-login to pick up docker group, or run: newgrp docker
-sudo curl -L https://github.com/docker/compose/releases/download/v2.29.2/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
+# Remove dev dependencies
+RUN npm prune --omit=dev
+
+USER kreditinfo
+
+EXPOSE 3000
+CMD ["npm", "start"]
 ```
 
----
+## FE (NextJs) ``docker-compose.yml``
+```yaml
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kreditinfo_client
+    ports:
+      - "3000:3000"
+```
 
-## 3) Bring up Jenkins on its EC2
-Create `docker-compose.yml` on the **Jenkins EC2**:
+## FE (NextJs) ``docker-compose.override.yml``
+```yaml
+services:
+  web:
+    build:
+      context: .
+      target: dev
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - NEXT_WEBPACK_USEPOLLING=1
+      - CHOKIDAR_INTERVAL=200
+      - NODE_ENV=development
+    command: npm run dev
+```
+
+## FE (NextJs) ``docker-compose.prod.yml``
+```yaml
+services:
+  web:
+    build:
+      context: .
+      target: prod
+    container_name: kreditinfo_client
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+```
+
+
+
+## BE (Laravel) Multi-Stage ``Dockerfile``
+```
+# =============================
+# 1. Base Stage (common setup)
+# =============================
+FROM php:8.2-fpm AS base
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpng-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
+    locales \
+    zip \
+    jpegoptim optipng pngquant gifsicle \
+    vim unzip git curl \
+    libonig-dev \
+    libxml2-dev \
+    libzip-dev \
+    libmagickwand-dev --no-install-recommends \
+    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd zip \
+    && pecl install imagick \
+    && docker-php-ext-enable imagick \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Composer
+COPY --from=composer:2.6 /usr/bin/composer /usr/bin/composer
+
+# Install dockerize (wait for db)
+ARG DOCKERIZE_VERSION=v0.6.1
+RUN if ! command -v dockerize >/dev/null 2>&1; then \
+        curl -L https://github.com/jwilder/dockerize/releases/download/${DOCKERIZE_VERSION}/dockerize-linux-amd64-${DOCKERIZE_VERSION}.tar.gz \
+        | tar -C /usr/local/bin -xzv; \
+    fi
+
+WORKDIR /var/www/html
+
+# Copy composer files first for caching
+COPY composer.json composer.lock ./
+
+# =============================
+# 2. Build Stage
+# =============================
+FROM base AS build
+
+WORKDIR /var/www/html
+
+# Copy full source code AFTER dependencies are installed
+COPY . .
+
+# Install PHP dependencies (no dev) – cached unless composer.json/lock changes
+RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+
+# =============================
+# 3. Development Stage
+# =============================
+FROM base AS dev
+
+WORKDIR /var/www/html
+
+# Copy full source
+COPY . .
+
+# Install PHP dependencies including dev (cached with composer files only)
+RUN composer install --optimize-autoloader --no-interaction --prefer-dist
+
+# Set permissions
+RUN chown -R www-data:www-data storage bootstrap/cache \
+    && chmod -R 775 storage bootstrap/cache
+
+# Copy entrypoint
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+EXPOSE 9000
+
+ENTRYPOINT ["entrypoint.sh"]
+
+# Run php-fpm for dev
+CMD ["php-fpm", "-F"]
+
+# =============================
+# 4. Production Stage
+# =============================
+FROM base AS prod
+
+# Copy built application from build stage
+COPY --from=build /var/www/html /var/www/html
+
+# Copy example .env as actual .env
+COPY .env.production.example /var/www/html/.env
+
+# Set permissions
+RUN chown -R www-data:www-data storage bootstrap/cache \
+    && chmod -R 775 storage bootstrap/cache
+
+# Copy entrypoint
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+EXPOSE 9000
+
+ENTRYPOINT ["entrypoint.sh"]
+CMD ["php-fpm", "-F"]
+```
+
+## BE (Laravel) ``docker-compose.yml``
+```yaml
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    container_name: linkage_app
+    restart: unless-stopped
+    volumes:
+      - ./:/var/www/html
+      - /var/www/html/vendor
+    networks:
+      - linkage_network
+    depends_on:
+      - db
+      - minio
+
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    ports:
+      - "8000:80"
+    container_name: linkage_nginx
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./public:/var/www/html
+    networks:
+      - linkage_network
+    depends_on:
+      - app
+      - php
+
+  php:
+    image: php:8.2-fpm
+    container_name: linkage_php
+    restart: unless-stopped
+    volumes:
+      - .:/var/www
+      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
+
+  db:
+    image: mysql:8.0
+    container_name: linkage_db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_ROOT_PASSWORD: ${ROOT_PASSWORD}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - linkage_data:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - linkage_network
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: linkage_phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      PMA_HOST: ${PMA_HOST}
+      PMA_USER: ${PMA_USER}
+      PMA_PASSWORD: ${PMA_PASSWORD}
+    networks:
+      - linkage_network
+    depends_on:
+      - db
+
+  minio:
+    image: minio/minio:latest
+    container_name: linkage_minio
+    command: server --console-address ":9001" /data
+    restart: unless-stopped
+    ports:
+      - "9002:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    volumes:
+      - linkage_minio:/data
+    networks:
+      - linkage_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mc:
+    image: minio/mc:latest
+    container_name: linkage_mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        echo '>> Ensuring bucket: ${MINIO_BUCKET}';
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+        mc mb --ignore-existing local/${MINIO_BUCKET} &&
+        mc anonymous set download local/${MINIO_BUCKET} || true
+      "
+    networks:
+      - linkage_network
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    restart: "no"
+
+networks:
+  linkage_network:
+
+volumes:
+  linkage_data:
+  linkage_minio:
+
+```
+
+## BE (Laravel) ``docker-compose.prod.yml``
+```yaml
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    image: linkage_backend 
+    container_name: linkage_app
+    restart: unless-stopped
+    volumes:
+      - ./:/var/www/html
+
+```
+
+## BE (Laravel) ``docker/entrypoint.sh``
+```bash
+#!/bin/sh
+set -e
+
+ENV_FILE=/var/www/html/.env
+
+if [ ! -f "$ENV_FILE" ]; then
+    cp /var/www/html/.env.example "$ENV_FILE"
+fi
+
+echo "📦 Checking Composer dependencies..."
+if [ ! -d "vendor" ]; then
+  composer install --no-dev --optimize-autoloader --no-interaction
+fi
+
+echo "🔑 Checking APP_KEY..."
+if [ -z "$APP_KEY" ] || [ "$APP_KEY" = "base64:" ]; then
+  echo "⚡ No APP_KEY set, generating one..."
+  php artisan key:generate --force
+else
+  echo "✅ APP_KEY already set."
+fi
+
+echo "⏳ Waiting for database..."
+dockerize -wait tcp://mysql-linkage:3306 -timeout 60s
+
+echo "🚀 Running migrations..."
+php artisan migrate --force || echo "⚠️ Migration skipped (already up to date)"
+php artisan db:seed || echo "⚠️ Seeder skipped (already up to date)"
+
+echo "🧹 Caching config, routes, views..."
+php artisan config:clear
+php artisan route:clear
+php artisan view:clear
+# php artisan optimize:clear
+
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+
+echo "✅ Starting PHP-FPM..."
+exec php-fpm -F
+
+```
+
+## BE (Laravel) ``docker/php/uploads.ini``
+```
+upload_max_filesize = 1024M
+post_max_size = 1024M
+memory_limit = 2048M
+expose_php = Off
+```
+
+## BE (Laravel) ``docker/nginx/default.conf``
+```bash
+server {
+  listen 80;
+  index index.php index.html;
+  server_name localhost;
+
+  root /var/www/html/public;
+
+  # Enable error logging
+  error_log  /var/log/nginx/error.log debug;
+  access_log /var/log/nginx/access.log;
+
+  # increase request size
+  client_max_body_size 1024M;
+  proxy_hide_header X-Powered-By;
+  fastcgi_hide_header X-Powered-By;
+
+  location / {
+    try_files $uri $uri/ /index.php?$query_string;
+  }
+
+  location ~ \.php$ {
+    include fastcgi_params;
+    fastcgi_pass app:9000;
+    fastcgi_index index.php;
+    fastcgi_param PATH_INFO $fastcgi_path_info;
+    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+
+    # PHP error visibility
+    # comment this if you don't want to show php errors
+    fastcgi_param PHP_VALUE "display_errors=1 \n error_reporting=E_ALL";
+
+    fastcgi_buffers 16 16k;
+    fastcgi_buffer_size 32k;
+  }
+
+  location ~ /\.ht {
+    deny all;
+  }
+}
+
+```
+
+## BE (Laravel) ``docker/nginx/nginx.conf``
+```bash
+user  kreditinfo_nginx;
+worker_processes  auto;
+
+events {
+  worker_connections 1024;
+}
+
+http {
+  server_tokens off;
+  add_header Server "";
+
+  include /etc/nginx/mime.types;
+  sendfile        on;
+  keepalive_timeout  65;
+
+  include /etc/nginx/conf.d/*.conf;
+}
+```
+
+## BE (Laravel) ``docker/nginx/Dockerfile``
+```yaml
+FROM nginx:alpine
+
+# Create non-root user
+RUN addgroup -g 1001 -S kreditinfo_nginx && \
+    adduser -S kreditinfo_nginx -u 1001 -G kreditinfo_nginx
+
+# Set permissions for logs and www
+RUN mkdir -p /var/www/html \
+    && chown -R kreditinfo_nginx:kreditinfo_nginx /var/www/html /var/log/nginx /var/cache/nginx /var/run
+
+# Copy configs
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY default.conf /etc/nginx/conf.d/default.conf
+```
+
+## BE (Laravel) ``docker/mysql/init.sql``
+```sql
+GRANT ALL PRIVILEGES ON *.* TO 'admin_kreditinfo'@'%' IDENTIFIED BY 'adm1n_krEditInfo' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+```
+
+## Jenkins ``Dockerfile``
+```Dockerfile
+FROM jenkins/jenkins:lts
+
+USER root
+
+# Install Docker CLI and docker-compose
+RUN apt-get update && apt-get install -y \
+  docker.io \
+  docker-compose \
+  git \
+  curl \
+  sudo \
+  && rm -rf /var/lib/apt/lists/*
+
+# Add jenkins user to docker group
+RUN usermod -aG docker jenkins
+
+USER jenkins
+
+```
+
+## Jenkins ``docker-compose.yml``
 ```yaml
 version: "3.9"
 
@@ -60,7 +532,7 @@ services:
     user: root
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8081:8080"
       - "50000:50000"
     volumes:
       - jenkins_home:/var/jenkins_home
@@ -74,413 +546,161 @@ networks:
 
 volumes:
   jenkins_home:
-```
-Start Jenkins:
-```bash
-docker compose up -d
-```
-Open `http://JENKINS_IP:8080`.
 
-**Install plugins**: *Git*, *GitHub*, *Pipeline*, *Credentials*, *SSH Agent*, *Docker Pipeline*.
-
-**Create credentials** (Manage Jenkins → Credentials):
-- `github-ssh`: Kind = *SSH Username with private key* → paste private key that can read your GitHub repo.
-- `dockerhub-creds`: Kind = *Username with password* (Docker Hub).
-- `ec2-ssh-prod`: Kind = *SSH Username with private key* → user `ubuntu`, private key for **App EC2**.
-
----
-
-## 4) Prepare your Laravel repository
-In your repo, add the following files and commit them. (All examples are already in this canvas; copy into your repo.)
-
-- `.docker/php-fpm.Dockerfile` — PHP‑FPM image for Laravel
-- `.docker/nginx.conf` — Nginx reverse proxy with SSL
-- `.docker/supervisor-queue.conf` — queue worker
-- `.docker/cron.d/laravel-scheduler` — scheduler cron
-- `compose.prod.yml` — production stack (app/nginx/redis/mysql)
-- `Jenkinsfile` — CI/CD pipeline
-
-> If you compile front‑end assets, add a Node stage in the Dockerfile and copy the built files into `public/`.
-
-Commit & push to GitHub.
-
----
-
-## 5) Point your domain to the App EC2
-In **GoDaddy DNS**, set an **A record** for `@` (and `www` CNAME → `@` if desired) to `APP_IP`.
-
-Propagation can take a few minutes.
-
----
-
-## 6) Install GoDaddy SSL on the App EC2
-1. In GoDaddy SSL dashboard, download the **Apache** bundle (domain `.crt` + `gd_bundle-g2-g1.crt`).
-2. On your workstation, combine them:
-   ```bash
-   cat yourdomain.crt gd_bundle-g2-g1.crt > fullchain.pem
-   ```
-3. Upload `fullchain.pem` and your private key `yourdomain.key` to the App EC2 at:
-   ```
-sudo mkdir -p /etc/ssl/yourdomain
-sudo chown -R ubuntu:ubuntu /etc/ssl/yourdomain
-# then copy files there (scp/rsync/SFTP)
-   ```
-4. Ensure Nginx volume in `compose.prod.yml` maps `/etc/ssl/yourdomain` into the container.
-
-> GoDaddy certs typically renew annually. Set yourself a calendar reminder to replace the files and restart Nginx when they expire.
-
----
-
-## 7) Prepare the App EC2 filesystem & env files
-SSH to **App EC2** and create a deploy folder:
-```bash
-mkdir -p ~/app/_runtime_code
-cd ~/app
-```
-Create `.env.app`:
-```
-APP_ENV=production
-APP_DEBUG=false
-APP_URL=https://yourdomain.com
-APP_KEY=base64:GENERATE_THIS_ONCE
-
-LOG_CHANNEL=stderr
-
-DB_CONNECTION=mysql
-DB_HOST=mysql
-DB_PORT=3306
-DB_DATABASE=yourdb
-DB_USERNAME=youruser
-DB_PASSWORD=yourpass
-
-CACHE_DRIVER=redis
-QUEUE_CONNECTION=redis
-REDIS_HOST=redis
-REDIS_PORT=6379
-SESSION_DRIVER=redis
-SESSION_LIFETIME=120
-```
-Create `.env.mysql`:
-```
-MYSQL_DATABASE=yourdb
-MYSQL_USER=youruser
-MYSQL_PASSWORD=yourpass
-MYSQL_ROOT_PASSWORD=strongrootpass
-```
-Copy `compose.prod.yml` and the `.docker/` directory from your repo to `~/app/` (first time you can SCP/rsync manually).
-
-Generate a one‑time app key locally and paste into `.env.app` if you don’t have one yet:
-```bash
-# temporary php container just to generate a key if needed
-docker run --rm -v "$PWD/_runtime_code":/app -w /app php:8.3-cli-alpine php -r "echo base64_encode(random_bytes(32));"
 ```
 
----
-
-## 8) First boot of the stack (to create volumes)
-From **App EC2** in `~/app`:
-```bash
-docker compose -f compose.prod.yml up -d
-```
-Wait for MySQL to initialize (first run may take ~30–60s). Then create DB schema:
-```bash
-docker compose -f compose.prod.yml exec -T app php artisan migrate --force
-docker compose -f compose.prod.yml exec -T app php artisan storage:link || true
-```
-
-> If your image doesn’t yet have the code (first CI run not done), you can stop here and continue once the pipeline pushes an image.
-
----
-
-## 9) Configure the GitHub → Jenkins webhook
-- GitHub repo → **Settings → Webhooks → Add webhook**
-  - Payload URL: `http://JENKINS_IP:8080/github-webhook/`
-  - Content type: `application/json`
-  - Events: **Just the push event**
-- In Jenkins job (created in next step), enable **GitHub hook trigger for GITScm polling**.
-
----
-
-## 10) Create the Jenkins Pipeline job
-**Option A: Multibranch Pipeline** (recommended):
-- New Item → *Multibranch Pipeline* → Repository (SSH URL) → Credentials = `github-ssh`.
-- Build triggers: *Periodically if not otherwise run* (optional); enable GitHub hook in repo settings (step 9).
-
-**Option B: Single Pipeline**:
-- New Item → *Pipeline* → select *Pipeline script from SCM* → Git → SSH URL + `github-ssh` creds → script path `Jenkinsfile`.
-
----
-
-## 11) Jenkinsfile (CI/CD) — copy to repo root
+## Jenkins Pipeline script
 ```groovy
 pipeline {
-  agent any
-  environment {
-    REGISTRY = "docker.io"
-    REGISTRY_NAMESPACE = "yourdockerhubuser"
-    IMAGE_NAME = "your-laravel-app"
-    GIT_COMMIT_SHORT = "${env.GIT_COMMIT?.take(7)}"
-    APP_TAG = "${GIT_COMMIT_SHORT ?: 'manual'}"
-  }
+    agent any
 
-  options { timestamps() }
-
-  triggers { pollSCM('') } // webhook will trigger builds; polling is a fallback
-
-  stages {
-    stage('Checkout') {
-      steps {
-        sshagent(credentials: ['github-ssh']) { checkout scm }
-      }
+    environment {
+        IMAGE_NAME = "darksidebug/linkage-admin"
+        IMAGE_TAG = "latest"
     }
 
-    stage('Composer Validate & Test') {
-      steps {
-        sh '''
-          docker run --rm -v "$PWD":/app -w /app php:8.3-cli-alpine sh -lc "\
-            apk add --no-cache git unzip && \
-            curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && \
-            composer install --no-interaction --prefer-dist && \
-            php -v && composer -V && \
-            ./vendor/bin/phpunit --testsuite=Unit --colors=never || true"
-        '''
-      }
-    }
-
-    stage('Build Image') {
-      steps {
-        script { env.FULL_TAG = "${REGISTRY}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}:${APP_TAG}" }
-        sh 'docker build -f .docker/php-fpm.Dockerfile -t "$FULL_TAG" .'
-      }
-    }
-
-    stage('Push Image') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', passwordVariable: 'DOCKERHUB_PASS', usernameVariable: 'DOCKERHUB_USER')]) {
-          sh '''
-            echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USER" --password-stdin
-            docker push "$FULL_TAG"
-          '''
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                url: 'https://github.com/awesome-devs-team/linkage-info-solutions-admin-v2.git',
+                credentialsId: 'github-creds'
+            }
         }
-      }
-    }
 
-    stage('Deploy to Prod EC2') {
-      steps {
-        sshagent(credentials: ['ec2-ssh-prod']) {
-          sh '''
-            REMOTE_USER=ubuntu
-            REMOTE_HOST=APP_IP
-            # Ensure target dir exists
-            ssh -o StrictHostKeyChecking=no $REMOTE_USER@$REMOTE_HOST "mkdir -p ~/app/_runtime_code"
-            # Optional: sync built code for nginx static serving (if needed)
-            rsync -az --delete -e "ssh -o StrictHostKeyChecking=no" --exclude 'storage/*' --exclude '.git' ./ $REMOTE_USER@$REMOTE_HOST:~/app/_runtime_code/
-            # Write tag and roll containers
-            ssh -o StrictHostKeyChecking=no $REMOTE_USER@$REMOTE_HOST "\
-              set -e; cd ~/app; \
-              echo APP_TAG='${APP_TAG}' > .deploy_env; \
-              export \$(cat .deploy_env | xargs); \
-              docker compose -f compose.prod.yml pull; \
-              docker compose -f compose.prod.yml up -d --remove-orphans; \
-              docker system prune -f"
-          '''
+        stage('Build Docker Image') { 
+            steps { 
+                script { 
+                    sh """ 
+                        echo ">> Building image for app service"
+                        docker-compose -f docker-compose.prod.yml build app
+                    """ 
+                } 
+            } 
         }
-      }
-    }
-
-    stage('Run Migrations & Cache (post-deploy)') {
-      steps {
-        sshagent(credentials: ['ec2-ssh-prod']) {
-          sh '''
-            ssh -o StrictHostKeyChecking=no ubuntu@APP_IP "\
-              set -e; cd ~/app; \
-              docker compose -f compose.prod.yml exec -T app php artisan migrate --force; \
-              docker compose -f compose.prod.yml exec -T app php artisan config:cache; \
-              docker compose -f compose.prod.yml exec -T app php artisan route:cache; \
-              docker compose -f compose.prod.yml exec -T app php artisan view:cache; \
-              docker compose -f compose.prod.yml exec -T app php artisan storage:link || true"
-          '''
+        
+        stage('Push Docker Image') { 
+            steps { 
+                script { 
+                    withCredentials([
+                        usernamePassword( 
+                            credentialsId: 'docker-hub-creds', 
+                            usernameVariable: 'DOCKER_HUB_USER', 
+                            passwordVariable: 'DOCKER_HUB_PASS' 
+                        )]
+                    ) { 
+                        sh ''' 
+                            set -e 
+                            echo "🔑 Logging into Docker Hub..." 
+                            echo "$DOCKER_HUB_PASS" | docker login -u "$DOCKER_HUB_USER" --password-stdin 
+                        
+                            echo "📦 Pushing latest..." 
+                            docker-compose -f docker-compose.prod.yml push app
+                            
+                            echo "✅ Docker images pushed successfully." 
+                        ''' 
+                    }
+                } 
+            } 
         }
-      }
+
+        stage('Deploy to EC2') {
+            steps {
+                script {
+                    withCredentials([
+                        sshUserPrivateKey( 
+                            credentialsId: 'linkage-frontend-deploy-ssh-key', 
+                            keyFileVariable: 'SSH_KEY_FILE', 
+                            usernameVariable: 'SSH_USER' 
+                        ), 
+                        string( 
+                            credentialsId: 'ec2-frontend-host', 
+                            variable: 'REMOTE_HOST' 
+                        )
+                    ]) {
+                        sh '''
+                            set -e  # Stop on any command failure
+                            
+                            echo "🔐 Setting up SSH for deployment..."
+                            if ! grep -q "$REMOTE_HOST" "$HOME/.ssh/known_hosts" 2>/dev/null; then
+                                ssh-keyscan -H "$REMOTE_HOST" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+                            fi
+                            
+                            chmod 600 "$SSH_KEY_FILE"
+                            
+                            ssh -i "$SSH_KEY_FILE" \
+                                -o StrictHostKeyChecking=no \
+                                -o UserKnownHostsFile=/dev/null \
+                                "$SSH_USER@$REMOTE_HOST" << 'EOF'
+                                
+                            set -e
+                            
+                            echo "=============================="
+                            echo "🚀 Starting Docker deployment..."
+                            echo "=============================="
+                        
+                            echo "🔍 Checking Docker socket permissions..."
+                            if [ ! -w /var/run/docker.sock ]; then
+                                echo "⚠️ Fixing Docker socket permissions..."
+                                sudo chmod 666 /var/run/docker.sock || {
+                                    echo "❌ Failed to chmod docker.sock"
+                                    exit 1
+                                }
+                            fi
+                        
+                            echo "📂 Checking access to /home/ubuntu/linkage ..."
+                            if [ ! -d /home/ubuntu/linkage ]; then
+                                echo "❌ Directory /home/ubuntu/linkage not found!"
+                                exit 1
+                            fi
+                        
+                            echo "🔐 Fixing permissions for Jenkins access..."
+                            sudo chmod -R 755 /home/ubuntu/linkage
+                        
+                            cd /home/ubuntu/linkage || {
+                                echo "❌ Failed to cd into /home/ubuntu/linkage"
+                                exit 1
+                            }
+                            
+                            echo "📦 Pulling latest app image..."
+                            sudo docker pull darksidebug/linkage-admin-app:latest
+                            
+                            echo "🔁 Stopping and removing existing containers..."
+                            sudo docker rm -f linkage_admin 2>/dev/null || true
+                            
+                            echo "🚀 Running app container..."
+                            sudo docker run -d \
+                              --name linkage_admin \
+                              -p 3001:3000 \
+                              -e NODE_ENV=production \
+                              darksidebug/linkage-admin-app:latest
+                        
+                            echo "🧹 Cleaning up unused Docker resources..."
+                            sudo docker system prune -f
+                        
+                            echo "✅ Deployment completed successfully!"
+                            echo "=============================="
+                        '''
+                    }
+                }
+            }
+        }
     }
-
-    stage('Smoke Test') {
-      steps { sh 'curl -fsS https://yourdomain.com/ || (docker ps; exit 1)' }
+    
+    post {
+        always {
+            echo "🧹 Cleaning workspace..."
+            cleanWs()
+        }
+        success {
+            echo '✅  Linkageph Admin Docker deployment successful via Docker Hub!'
+        }
+        failure {
+            echo '❌ Deployment failed.'
+        }
     }
-  }
-}
-```
-**Replace** `yourdockerhubuser`, `your-laravel-app`, and `APP_IP` with your values.
-
----
-
-## 12) Nginx reverse proxy with SSL (inside the container)
-`.docker/nginx.conf`:
-```nginx
-server {  # HTTP → HTTPS
-  listen 80;
-  server_name yourdomain.com www.yourdomain.com;
-  return 301 https://$host$request_uri;
 }
 
-server {
-  listen 443 ssl;
-  server_name yourdomain.com www.yourdomain.com;
-
-  ssl_certificate /etc/ssl/yourdomain/fullchain.pem;
-  ssl_certificate_key /etc/ssl/yourdomain/yourdomain.key;
-  ssl_protocols TLSv1.2 TLSv1.3;
-  ssl_ciphers HIGH:!aNULL:!MD5;
-
-  root /var/www/html/public;
-  index index.php index.html;
-
-  location / {
-    try_files $uri $uri/ /index.php?$query_string;
-  }
-
-  location ~ \.php$ {
-    include fastcgi_params;
-    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-    fastcgi_pass app:9000;  # php-fpm service name
-  }
-
-  client_max_body_size 50M;
-}
 ```
 
----
-
-## 13) Production Docker Compose (App EC2)
-`compose.prod.yml`:
-```yaml
-version: "3.9"
-services:
-  app:
-    image: yourdockerhubuser/your-laravel-app:${APP_TAG:-latest}
-    env_file: [.env.app]
-    volumes:
-      - app-storage:/var/www/html/storage
-      - app-cache:/var/www/html/bootstrap/cache
-    depends_on: [mysql]
-    networks: [web]
-
-  nginx:
-    image: nginx:1.27-alpine
-    depends_on: [app]
-    ports: ["80:80", "443:443"]
-    volumes:
-      - app-storage:/var/www/html/storage:ro
-      - app-cache:/var/www/html/bootstrap/cache:ro
-      - ./_runtime_code:/var/www/html:ro
-      - ./.docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - /etc/ssl/yourdomain:/etc/ssl/yourdomain:ro
-    networks: [web]
-
-  queue:
-    image: yourdockerhubuser/your-laravel-app:${APP_TAG:-latest}
-    env_file: [.env.app]
-    command: ["sh", "-lc", "supervisord -n -c /etc/supervisor/conf.d/supervisor-queue.conf"]
-    volumes:
-      - app-storage:/var/www/html/storage
-      - app-cache:/var/www/html/bootstrap/cache
-    networks: [web]
-
-  scheduler:
-    image: yourdockerhubuser/your-laravel-app:${APP_TAG:-latest}
-    env_file: [.env.app]
-    command: ["sh", "-lc", "crond -f -l 8"]
-    volumes:
-      - ./.docker/cron.d:/etc/crontabs:ro
-      - app-storage:/var/www/html/storage
-      - app-cache:/var/www/html/bootstrap/cache
-    networks: [web]
-
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis-data:/data
-    networks: [web]
-
-  mysql:
-    image: mysql:8.4
-    env_file: [.env.mysql]
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
-    ports: ["3306:3306"]
-    volumes:
-      - dbdata:/var/lib/mysql
-    networks: [web]
-
-networks:
-  web: { driver: bridge }
-
-volumes:
-  app-storage:
-  app-cache:
-  redis-data:
-  dbdata:
-```
-
----
-
-## 14) Make a tiny health endpoint (optional)
-Add to `routes/web.php`:
-```php
-Route::get('/health', fn () => response()->noContent());
-```
-Then in Jenkins **Smoke Test** stage, curl `/health` for a fast 204.
-
----
-
-## 15) First CI/CD run
-1. Push to `main` (or your default branch).
-2. GitHub webhook triggers Jenkins → Build → Push image → Deploy → Migrate → Smoke test.
-3. Visit `https://yourdomain.com`.
-
-If Nginx shows 502 temporarily, wait for app container to finish booting and MySQL readiness.
-
----
-
-## 16) Rollback (previous image)
-On Jenkins, re-run a successful prior build **or** set a specific `APP_TAG` and redeploy:
-- Edit the pipeline run parameters (if you parameterize it) or temporarily change `APP_TAG` in Jenkinsfile to a previous short SHA.
-- Deploy stage will pull that tag and restart containers.
-
-Alternatively on the App EC2:
-```bash
-cd ~/app
-echo APP_TAG=abcdef1 > .deploy_env
-export $(cat .deploy_env | xargs)
-docker compose -f compose.prod.yml pull
-docker compose -f compose.prod.yml up -d --remove-orphans
-```
-
----
-
-## 17) Backups & persistence
-- **MySQL**: `dbdata` named volume. Snapshot the EBS volume of the EC2 host and/or use `mysqldump` to S3 via cron.
-- **Storage**: `app-storage` persists user uploads. Include it in your backup plan.
-
----
-
-## 18) Security checklist
-- Disable SSH password auth; use keys only.
-- Limit SG inbound to your IP (except 80/443).
-- Keep `.env` files on the server only; never commit them.
-- Use strong MySQL root/user passwords.
-- Keep images updated; rebuild periodically (base image CVEs).
-
----
-
-## 19) Troubleshooting
-- **Jenkins can’t clone repo** → verify `github-ssh` has access; test `ssh -T git@github.com` from Jenkins container.
-- **Push to Docker Hub fails** → check `dockerhub-creds` and repo name; ensure Docker Hub rate limits aren’t hit.
-- **Nginx 502** → `docker compose logs nginx app`; verify `fastcgi_pass app:9000` and that the `app` container is healthy.
-- **MySQL auth errors** → confirm `.env.app` DB creds match `.env.mysql` and that `mysql` container is running.
-- **SSL not loading** → inside `nginx` container, verify files at `/etc/ssl/yourdomain/`; check permissions and correct filenames.
-
----
-
-### You’re done ✅
-You now have a repeatable CI/CD flow: **GitHub → Jenkins → Docker Hub → EC2** with **Nginx (HTTPS via GoDaddy)**, **MySQL**, and **Redis**. Push code → image builds → deploys → migrations → live.
 
