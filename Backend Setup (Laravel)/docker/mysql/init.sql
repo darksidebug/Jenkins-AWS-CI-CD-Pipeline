@@ -1,0 +1,2 @@
+GRANT ALL PRIVILEGES ON *.* TO 'admin_kreditinfo'@'%' IDENTIFIED BY 'adm1n_krEditInfo' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
