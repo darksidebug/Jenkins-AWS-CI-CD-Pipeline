@@ -55,3 +55,49 @@ USER kreditinfo
 EXPOSE 3000
 CMD ["npm", "start"]
 ```
+
+## FE (NextJs) ``docker-compose.yml``
+```yaml
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kreditinfo_client
+    ports:
+      - "3000:3000"
+```
+
+## FE (NextJs) ``docker-compose.override.yml``
+```yaml
+services:
+  web:
+    build:
+      context: .
+      target: dev
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - NEXT_WEBPACK_USEPOLLING=1
+      - CHOKIDAR_INTERVAL=200
+      - NODE_ENV=development
+    command: npm run dev
+```
+
+## FE (NextJs) ``docker-compose.prod.yml``
+```yaml
+services:
+  web:
+    build:
+      context: .
+      target: prod
+    container_name: kreditinfo_client
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+```
