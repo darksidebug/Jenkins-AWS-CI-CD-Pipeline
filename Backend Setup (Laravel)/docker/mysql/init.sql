@@ -1,2 +1,2 @@
-GRANT ALL PRIVILEGES ON *.* TO 'admin_kreditinfo'@'%' IDENTIFIED BY 'adm1n_krEditInfo' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO 'your_username'@'%' IDENTIFIED BY 'your_password' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
