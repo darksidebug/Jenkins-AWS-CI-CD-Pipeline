@@ -5,7 +5,7 @@ services:
     build:
       context: .
       target: prod
-    container_name: kreditinfo_client
+    container_name: sample_web_app
     restart: unless-stopped
     ports:
       - "3000:3000"
