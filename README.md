@@ -486,7 +486,7 @@ else
 fi
 
 echo "⏳ Waiting for database..."
-dockerize -wait tcp://mysql-linkage:3306 -timeout 60s
+dockerize -wait tcp://<your-db-service>:3306 -timeout 60s
 
 echo "🚀 Running migrations..."
 php artisan migrate --force || echo "⚠️ Migration skipped (already up to date)"
@@ -654,7 +654,68 @@ volumes:
 
 ```
 
-## Jenkins Pipeline script (Laravel)
+## Jenkins Credentials and Pipeline Script (Laravel)
+
+### Create credentials in your jenkins
+- Open Jenkins → Dashboard
+- Click Manage Jenkins
+- Click Credentials
+- Select:
+  - System
+  - Global credentials (unrestricted)
+- Then click Add Credentials.
+
+- Add Each Credential (Type-by-Type)
+  - GitHub Credentials (for Checkout Stage)
+  - Kind: _Username with password_
+  - Username: Your GitHub username
+  - Password: GitHub Personal Access Token
+  - ID: Example `github-creds`
+  - Description: GitHub Access Token for Jenkins - optional.
+ 
+- Docker Hub Credentials
+  - Kind: _Username with password_
+  - Username: Docker Hub username
+  - Password: Docker Hub access token / password
+  - ID: Example `docker-hub-creds`
+  - Description: Docker Hub login for pipeline - optional
+ 
+- SSH Key for EC2 Server (or in-house server) Deployment
+  - Kind: _SSH Username with private key_
+  - Username: `ec2-user` or `ubuntu` (Your EC2 SSH user) or your in-house server user
+  - Private Key: paste your `.pem` file
+    Note: Important:
+    Select → “Enter directly” → paste private key content.
+
+- Remote Host IP
+  - Kind: _Secret Text_
+  - Secret text: `your_ec2_user@ip_address` or `your_user@ip_address`
+  - ID: Example `ec2-host-ip`
+  - Description: EC2 public IP for deployment - optional
+    Note: Important:
+    If you have separate server for your backend specify your ID: e.g. `be-ec2-host-ip`, for separate server for frontend app ID: e.g. `fe-ec2-host-ip`
+
+- App / Database / Service Environment Variables
+  `DB_HOST` will be your database service name
+  
+| Credential ID           | Type        | Value                           |
+| ----------------------- | ----------- | ------------------------------- |
+| `APP_KEY`               | Secret Text | Your Laravel app key            |
+| `DB_HOST`               | Secret Text | Usually `mysql` or RDS endpoint |
+| `DB_DATABASE`           | Secret Text | e.g., `laravel_db`              |
+| `DB_USERNAME`           | Secret Text | DB username                     |
+| `DB_PASSWORD`           | Secret Text | DB password                     |
+| `MAIL_USERNAME`         | Secret Text | Email login                     |
+| `MAIL_PASSWORD`         | Secret Text | Email password                  |
+| `AWS_ACCESS_KEY_ID`     | Secret Text | AWS key                         |
+| `AWS_SECRET_ACCESS_KEY` | Secret Text | AWS secret                      |
+| `GOOGLE_CLIENT_ID`      | Secret Text | OAuth client id                 |
+| `GOOGLE_CLIENT_SECRET`  | Secret Text | OAuth secret                    |
+| `GHL_SECRET_KEY`        | Secret Text | Your GHL secret                 |
+| `GHL_MERCHANT_ID`       | Secret Text | Merchant ID                     |
+| `JWT_SECRET`            | Secret Text | JWT secret                      |
+
+## Laravel Pipeline Script
 ```groovy
 pipeline {
     agent any
@@ -784,7 +845,7 @@ pipeline {
                             variable: 'GHL_MERCHANT_ID' 
                         ), 
                         string( 
-                            credentialsId: 'LINKAGE_JWT_SECRET', 
+                            credentialsId: 'JWT_SECRET', 
                             variable: 'JWT_SECRET' 
                         )
                     ]) {
@@ -823,7 +884,7 @@ pipeline {
                                 -p 9001:9000 \
                                 -e NODE_ENV=production \
                                 -e APP_KEY="${APP_KEY}" \
-                                -e DB_HOST=mysql-linkage \
+                                -e DB_HOST=<your-db-service> \
                                 -e DB_DATABASE="${DB_DATABASE}" \
                                 -e DB_USERNAME="${DB_USERNAME}" \
                                 -e DB_PASSWORD="${DB_PASSWORD}" \
@@ -862,7 +923,7 @@ pipeline {
 
 ```
 
-## Jenkins Pipeline script (Next.Js)
+## Jenkins Pipeline Script (Next.Js)
 ```groovy
 pipeline {
     agent any
@@ -961,17 +1022,17 @@ pipeline {
                                 }
                             fi
                         
-                            echo "📂 Checking access to /home/ubuntu/your-project-dir> ..."
-                            if [ ! -d /home/ubuntu/<your-project-dir> ]; then
+                            echo "📂 Checking access to /home/<your-user>/your-project-dir> ..."
+                            if [ ! -d /home/<your-user>/<your-project-dir> ]; then
                                 echo "❌ Directory /home/ubuntu/<your-project-dir> not found!"
                                 exit 1
                             fi
                         
                             echo "🔐 Fixing permissions for Jenkins access..."
-                            sudo chmod -R 755 /home/ubuntu/<your-project-dir>
+                            sudo chmod -R 755 /home/<your-user>/<your-project-dir>
                         
-                            cd /home/ubuntu/linkage || {
-                                echo "❌ Failed to cd into /home/ubuntu/<your-project-dir>"
+                            cd /home/<your-user>/<your-project-folder> || {
+                                echo "❌ Failed to cd into /home/<your-user>/<your-project-dir>"
                                 exit 1
                             }
                             
@@ -1015,5 +1076,9 @@ pipeline {
 }
 
 ```
+
+## For server setup follow the steps here:
+Read the documentation part for server setup at README.md
+https://github.com/darksidebug/Laravel-CICD-Pipeline
 
 
