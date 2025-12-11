@@ -38,7 +38,7 @@ WORKDIR /app
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S kreditinfo -u 1001 -G nodejs
+    adduser -S <your_user> -u 1001 -G nodejs
 
 # Copy only what’s needed for prod
 COPY --from=build /app/package.json ./package.json
@@ -50,7 +50,7 @@ COPY --from=build /app/next.config.ts ./next.config.ts
 # Remove dev dependencies
 RUN npm prune --omit=dev
 
-USER kreditinfo
+USER <your_user>
 
 EXPOSE 3000
 CMD ["npm", "start"]
@@ -568,7 +568,7 @@ server {
 
 ## BE (Laravel) ``docker/nginx/nginx.conf``
 ```bash
-user  kreditinfo_nginx;
+user  <your_user>_nginx;
 worker_processes  auto;
 
 events {
@@ -597,7 +597,7 @@ RUN addgroup -g 1001 -S nginx && \
 
 # Set permissions for logs and www
 RUN mkdir -p /var/www/html \
-    && chown -R kreditinfo_nginx:kreditinfo_nginx /var/www/html /var/log/nginx /var/cache/nginx /var/run
+    && chown -R <your_user>_nginx:<your_user>_nginx /var/www/html /var/log/nginx /var/cache/nginx /var/run
 
 # Copy configs
 COPY nginx.conf /etc/nginx/nginx.conf
@@ -610,7 +610,7 @@ GRANT ALL PRIVILEGES ON *.* TO '<db_name>'@'%' IDENTIFIED BY '<db_username>' WIT
 FLUSH PRIVILEGES;
 ```
 
-## Jenkins ``Dockerfile``
+## Create folder for your Jenkins ``Dockerfile``
 ```Dockerfile
 FROM jenkins/jenkins:lts
 
