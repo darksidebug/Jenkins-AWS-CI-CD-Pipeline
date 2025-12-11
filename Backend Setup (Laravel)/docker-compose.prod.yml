@@ -6,14 +6,14 @@ services:
       context: .
       dockerfile: Dockerfile
       target: prod
-    container_name: kreditinfo_app
+    container_name: sample_app
     restart: unless-stopped
     environment:
       - NODE_ENV=production
     ports:
       - "3000:3000"
     networks:
-      - kreditinfo_network
+      - sample_network
     depends_on:
       - db
-      - minio
+      - minio # optional
