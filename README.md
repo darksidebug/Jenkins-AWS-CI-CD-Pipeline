@@ -341,7 +341,7 @@ services:
       - <project_name>_network
     depends_on:
       - db
-      - minio
+      - minio # remove this if you don't need minio
 
   nginx:
     build:
@@ -357,15 +357,6 @@ services:
       - <project_name>_network
     depends_on:
       - app
-      - php
-
-  php:
-    image: php:8.2-fpm
-    container_name: <php_container_name>
-    restart: unless-stopped
-    volumes:
-      - .:/var/www
-      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
 
   db:
     image: mysql:8.0
@@ -400,6 +391,7 @@ services:
     depends_on:
       - db
 
+  # optional
   minio:
     image: minio/minio:latest
     container_name: <minio_container_name>
@@ -422,6 +414,7 @@ services:
       timeout: 5s
       retries: 10
 
+  # optional
   mc:
     image: minio/mc:latest
     container_name: <mc_container_name>
@@ -650,7 +643,6 @@ services:
     volumes:
       - jenkins_home:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
-      - D:/Projects/Linkage/LinkagePH-Backend-Deployment.pem:/home/jenkins/deploy.pem:rw
     networks:
       - jenkins_network
 
