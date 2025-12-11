@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev
-    container_name: kreditinfo_client
+    container_name: sample_web_app
     volumes:
       - .:/app
       - /app/node_modules
